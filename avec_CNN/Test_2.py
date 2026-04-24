@@ -14,6 +14,8 @@ print("Modèle chargé avec succès !\n")
 
 def tester_fichier_audio(chemin_fichier):
     fs = 22050
+    SAMPLES_PER_SEGMENT = 3 * fs # 66150 échantillons (exactement 3 secondes)
+    
     print(f"\n>>> Analyse du fichier : {chemin_fichier}")
     
     if not os.path.exists(chemin_fichier):
@@ -21,43 +23,35 @@ def tester_fichier_audio(chemin_fichier):
         return
 
     try:
-        # --- 1. Chargement du fichier (Accepte .wav et .ogg) ---
+        # --- 1. Chargement et Nettoyage ---
         signal, sr = librosa.load(chemin_fichier, sr=fs)
-        
-        # --- 2. PRÉTRAITEMENT EXACTEMENT IDENTIQUE À L'ENTRAÎNEMENT ---
-        
-        # Trim avec le même seuil (suppression des silences)
         signal, _ = librosa.effects.trim(signal, top_db=20)
         
-        # Normalisation du volume audio
-        if len(signal) > 0:
-            signal = librosa.util.normalize(signal)
-        else:
-            print("Erreur : Fichier audio vide après la suppression du silence.")
+        # --- 2. LA MODIFICATION CRUCIALE ---
+        # On vérifie qu'on a bien au moins 3 secondes de voix utile
+        if len(signal) < SAMPLES_PER_SEGMENT:
+            print("Erreur : L'audio est trop court après avoir enlevé les silences. Il faut au moins 3 secondes de parole.")
             return
+            
+        # On bloque la taille à EXACTEMENT 66150 échantillons (comme à l'entraînement)
+        signal = signal[:SAMPLES_PER_SEGMENT]
         
-        # Extraction MFCC
+        # --- 3. Normalisation ---
+        signal = librosa.util.normalize(signal)
+        
+        # --- 4. Extraction MFCC ---
+        # Comme le signal fait exactement 3s, la matrice fera naturellement (13, 130)
         mfcc = librosa.feature.mfcc(y=signal, sr=fs, n_mfcc=13)
         
-        # --- 3. Forcer la largeur à 130 pour correspondre au modèle CNN ---
-        expected_width = 130
-        current_width = mfcc.shape[1]
-        
-        if current_width > expected_width:
-            mfcc = mfcc[:, :expected_width] # Tronquer si trop long
-        else:
-            pad_width = expected_width - current_width
-            mfcc = np.pad(mfcc, ((0, 0), (0, pad_width)), mode='constant') # Padder si trop court
-        
-        # Préparation du format pour Keras (Batch, 13, 130, 1)
+        # Préparation du format pour le CNN (Batch, 13, 130, 1)
         mfcc = mfcc[np.newaxis, ..., np.newaxis]
         
-        # --- 4. Prédiction ---
+        # --- 5. Prédiction ---
         prediction = model.predict(mfcc, verbose=0)
         index = np.argmax(prediction)
         probabilite = np.max(prediction)
         
-        # Affichage du résultat avec seuil de sécurité
+        # Affichage du résultat
         if probabilite < 0.40:
             print("RÉSULTAT : Locuteur inconnu (Confiance trop faible).")
         else:
