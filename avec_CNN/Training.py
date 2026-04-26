@@ -11,8 +11,8 @@ from tensorflow.keras.utils import to_categorical
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 print("--- 1. Chargement des données ---")
-X = np.load('X_data.npy')
-y = np.load('y_data.npy')
+X = np.load('data_X.npy')
+y = np.load('data_y.npy')
 classes = np.load('classes.npy')
 
 print(f"Données chargées : {len(X)} échantillons pour {len(classes)} étudiants.")

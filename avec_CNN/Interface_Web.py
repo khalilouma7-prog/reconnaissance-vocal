@@ -2,62 +2,106 @@ import gradio as gr
 import numpy as np
 import librosa
 import os
-
-# Désactiver les messages TF
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
 from tensorflow.keras.models import load_model
 
-print("Chargement du modèle...")
-model = load_model('modele_reconnaissance_vocale.h5')
-class_names = np.load('classes.npy')
-print("Modèle chargé ! Lancement de l'interface...")
+# Désactiver les messages inutiles de TensorFlow dans le terminal
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-# Fonction qui sera appelée quand on clique sur "Envoyer" dans l'interface
-def reconnaitre_voix(audio_path):
+print("⏳ Chargement du modèle en cours...")
+
+# 1. Chargement du modèle et des classes
+try:
+    model = load_model('modele_reconnaissance_vocale.h5')
+    classes = np.load('classes.npy')
+    print("✅ Modèle et classes chargés avec succès !")
+except Exception as e:
+    print(f"❌ Erreur lors du chargement du modèle : {e}")
+
+# 2. Dictionnaire des photos
+# Les clés doivent correspondre exactement aux noms des dossiers d'origine
+photos_etudiants = {
+    "Dounia_Zaitoune": "photos/Dounia_Zaitoune.jpeg",
+    "HALIMA": "photos/HALIMA.jpeg",
+    "Imane_Chalati": "photos/Imane_Chalati.jpeg",
+    "Kawtar": "photos/Kawtar.jpeg",
+    "Khadija": "photos/khadija.jpeg", 
+    "Oumaima_Khalil": "photos/Oumaima_Khalil.jpeg",
+    # Ajoute les autres étudiants ici au fur et à mesure
+}
+
+# Image par défaut si la personne n'a pas encore de photo
+IMAGE_SECOURS = "photos/inconnu.jpg"
+
+# 3. Fonction de prédiction
+def predire_voix(audio_path):
     if audio_path is None:
-        return "⚠️ Veuillez enregistrer un audio."
-
-    fs = 22050
-    SAMPLES_PER_SEGMENT = 3 * fs # 3 secondes
-
+        return "⚠️ Veuillez fournir un enregistrement audio.", IMAGE_SECOURS
+        
     try:
-        # Chargement de l'audio venant de l'interface web
-        signal, sr = librosa.load(audio_path, sr=fs)
-        signal, _ = librosa.effects.trim(signal, top_db=20)
+        # --- PRÉTRAITEMENT DE L'AUDIO (Même recette que Preprocessing.py) ---
+        SAMPLE_RATE = 22050
+        DURATION = 3
+        SAMPLES_PER_SEGMENT = SAMPLE_RATE * DURATION
 
-        # Vérification de la durée
-        if len(signal) < SAMPLES_PER_SEGMENT:
-            return "❌ Erreur : L'audio est trop court. Parlez pendant au moins 3 à 4 secondes."
+        # Charger l'audio
+        signal, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
 
-        # Découpage, normalisation et MFCC (La méthode parfaite)
-        signal = signal[:SAMPLES_PER_SEGMENT]
-        signal = librosa.util.normalize(signal)
-        mfcc = librosa.feature.mfcc(y=signal, sr=fs, n_mfcc=13)
-        mfcc = mfcc[np.newaxis, ..., np.newaxis]
+        # Enlever les silences
+        intervals = librosa.effects.split(signal, top_db=20)
+        signal_sans_silence = []
+        for start, end in intervals:
+            signal_sans_silence.extend(signal[start:end])
+        signal = np.array(signal_sans_silence)
 
-        # Prédiction
-        prediction = model.predict(mfcc, verbose=0)
-        index = np.argmax(prediction)
-        probabilite = np.max(prediction)
-
-        if probabilite < 0.40:
-            return "❓ RÉSULTAT : Locuteur inconnu (Confiance trop faible)."
+        # Ajuster la taille pile à 3 secondes (Sinon le CNN va planter)
+        if len(signal) > SAMPLES_PER_SEGMENT:
+            signal = signal[:SAMPLES_PER_SEGMENT] # On coupe ce qui dépasse
         else:
-            return f"✅ RÉSULTAT : {class_names[index]} (Confiance : {probabilite*100:.1f}%)"
-            
-    except Exception as e:
-        return f"❌ Erreur technique : {str(e)}"
+            padding = SAMPLES_PER_SEGMENT - len(signal)
+            signal = np.pad(signal, (0, padding), 'constant') # On comble avec du silence si trop court
 
-# --- CRÉATION DE L'INTERFACE VISUELLE ---
-interface = gr.Interface(
-    fn=reconnaitre_voix,
-    inputs=gr.Audio(sources=["microphone"], type="filepath", label="🎙️ Enregistrez votre voix (Parlez 4 secondes)"),
-    outputs=gr.Textbox(label="🧠 Prédiction de l'Intelligence Artificielle", lines=2),
-    title="Système de Reconnaissance Automatique du Locuteur",
-    description="Cliquez sur le micro, parlez normalement, puis cliquez sur Soumettre pour laisser le CNN (Deep Learning) analyser votre empreinte vocale.",
-    theme="default"
+        # Normaliser le volume
+        signal = librosa.util.normalize(signal)
+
+        # Transformer en MFCC (L'image mathématique)
+        mfcc = librosa.feature.mfcc(y=signal, sr=SAMPLE_RATE, n_mfcc=13)
+        
+        # Ajouter les dimensions pour le CNN -> (1, 13, 130, 1)
+        mfcc_final = mfcc[np.newaxis, ..., np.newaxis]
+
+        # --- PRÉDICTION ---
+        predictions = model.predict(mfcc_final)
+        index_predit = np.argmax(predictions) # L'index du score le plus haut
+        confiance = np.max(predictions) * 100 # Le pourcentage de certitude
+        nom_predit = classes[index_predit]    # Le nom de l'étudiant
+
+        # --- PRÉSENTATION DES RÉSULTATS ---
+        # Si la confiance est trop basse, on peut considérer que la personne est inconnue
+        if confiance < 50.0:
+            texte_resultat = f"### 🧐 Hum...\nJe ne suis pas très sûr. Le score de **{nom_predit}** n'est que de {confiance:.1f}%."
+            image_path = IMAGE_SECOURS
+        else:
+            texte_resultat = f"### 🎉 Résultat : **{nom_predit}**\n**Fiabilité :** {confiance:.1f}%"
+            # C'est ici que l'erreur d'indentation et de parenthèse a été corrigée !
+            image_path = photos_etudiants.get(nom_predit, IMAGE_SECOURS)
+        
+        return texte_resultat, image_path
+
+    except Exception as e:
+        return f"❌ Oups, une erreur s'est produite lors de l'analyse : {str(e)}", IMAGE_SECOURS
+
+# 4. DESIGN DE L'INTERFACE WEB (Gradio Blocks)
+theme_perso = gr.themes.Soft(
+    primary_hue="indigo", 
+    neutral_hue="slate",
+    font=[gr.themes.GoogleFont("Inter"), "sans-serif"]
 )
 
-# Lancement du serveur local
+with gr.Blocks(title="Reconnaissance Vocale ESI") as demo:
+    # En-tête
+    gr.Markdown('<h1 style="text-align: center; color: #4F46E5;">🎙️ Système de Reconnaissance Vocale ESI</h1>')
+
+# 5. Lancement du serveur Web
 if __name__ == "__main__":
-    interface.launch()
+    print("\n🚀 Démarrage de l'interface web...")
+    demo.launch(share=False, theme=theme_perso)
